@@ -4,15 +4,17 @@
  * @property {Date} end
  */
 
+
 // Source: https://www.linkedin.com/pulse/automate-color-coding-your-google-calendar-marguerite-thibodeaux-acc?trk=articles_directory
 // Todo: get Event Details? Only update related event: https://stackoverflow.com/questions/43242701/google-apps-script-and-trigger-when-new-calendar-event-is-added
 // Colors: https://developers.google.com/apps-script/reference/calendar/event-color?hl=de
+// Todo: Async: https://gist.github.com/sdesalas/2972f8647897d5481fd8e01f03122805
 
 function ColorEvents() {
   let dateRangeStart = new Date();
   let dateRangeEnd = new Date();
-  dateRangeStart.setDate((new Date()).getDate() - 1);
-  dateRangeEnd.setDate((new Date()).getDate() + 1);
+  dateRangeStart.setDate((new Date()).getDate() - 1*31);
+  dateRangeEnd.setDate((new Date()).getDate() + 6*31);
 
   dateRange = {
     start: dateRangeStart,
@@ -37,13 +39,13 @@ function colorPrivateCal(dateRange) {
     for (var j=0; j<events.length; j++) {
         let e = events[j];
         let title = e.getTitle();
-        if (title.toLocaleLowerCase().startsWith("beispiel 1")) {
+        if (title.toLocaleLowerCase().startsWith("fun")) {
             e.setColor(CalendarApp.EventColor.PALE_RED);
           }
-        else if (title.toLocaleLowerCase().startsWith("beispiel 2")) {
+        else if (title.toLocaleLowerCase().startsWith("ad:")) {
             e.setColor(CalendarApp.EventColor.RED);
           }
-        else if (title.toLocaleLowerCase().startsWith("beispiel 3")) {
+        else if (title.toLocaleLowerCase().startsWith("konzert")) {
             e.setColor(CalendarApp.EventColor.MAUVE);
           }
         }
@@ -61,7 +63,7 @@ function handleStudyAndWorkCal(dateRange) {
 
     let dateRangeStep = new Date(dateRange.start);
     while (dateRangeStep < dateRange.end) {
-      checkDayForStudyAndWork(dateRangeStep, calenderStudy, calendarWork)
+      checkDayForStudyAndWork(dateRangeStep, calenderStudy, calendarWork);
       dateRangeStep.setDate((dateRangeStep.getDate() + 1))
     }
 }
@@ -72,7 +74,7 @@ function handleStudyAndWorkCal(dateRange) {
  * @param {Calendar} calendarWork
  */
 function checkDayForStudyAndWork(date, calenderStudy, calendarWork) {
-    createStudyEventInWork(date, calenderStudy, calendarWork);
+    syncStudyEventsWithWorkCalendar(date, calenderStudy, calendarWork);
 
     let eventsStudy = calenderStudy.getEventsForDay(date);
     for (var j=0; j<eventsStudy.length; j++) {
@@ -90,26 +92,42 @@ function checkDayForStudyAndWork(date, calenderStudy, calendarWork) {
  * @param {Calendar} calenderStudy
  * @param {Calendar} calenderWork
  */
-function createStudyEventInWork(date, calenderStudy, calendarWork){
-  studyEvents = calenderStudy.getEventsForDay(date);
+function syncStudyEventsWithWorkCalendar(date, calenderStudy, calendarWork){
+  let studyEvents = removeStudyReminderEvents(calenderStudy.getEventsForDay(date));
+  let workEvents = calendarWork.getEventsForDay(date);
+
   if (studyEvents.length === 0) {
+    deleteStudyEvents(workEvents);
     return;
   }
   dateRange = getStartDateTimeAndEndDateTimeForEvents(studyEvents);
-  dateRange = addBufferToStudyDateRange(dateRange, 1.5);
+  dateRange = addBufferToStudyDateRange(dateRange, 1);
 
-  let existingStudyEvent = getStudyEventFromWorkEvents(calendarWork.getEventsForDay(date));
+  let existingStudyEvent = getStudyEventFromWorkEvents(workEvents);
 
   // Create Event if not already exisiting
   if (existingStudyEvent === null) {
     let event = calendarWork.createEvent('AD: Studium', dateRange.start, dateRange.end);
     event.setTag('generator', 'google-calender-automation')
-    console.log('Created event', event.getId())
+    Logger.log(`Created event: ${eventToLogString(event)}`);
     return;
   }
 
   updateExistingStudyEvent(existingStudyEvent, dateRange);
 }
+
+/**
+ * @param {CalendarEvent}[] events
+ */
+function deleteStudyEvents(events) {
+  for (var j=0; j < events.length; j++) {
+    if (events[j].getTag('generator') === 'google-calender-automation') {
+      Logger.log(`Deleting event: ${eventToLogString(events[j])}`);
+      events[j].deleteEvent();
+    }
+  }
+}
+
 
 /**
  * @param {CalendarEvent} event
@@ -124,7 +142,7 @@ function updateExistingStudyEvent(event, dateRange) {
   }
 
   event.setTime(dateRange.start, dateRange.end);
-  Logger.log('Updated  event', event.getId())
+  Logger.log(`Updated event: ${eventToLogString(event)}`)
 }
 
 /**
@@ -148,13 +166,23 @@ function getStartDateTimeAndEndDateTimeForEvents(events) {
   let dateRange = {start: null, end: null}
 
   for (var j=0; j<events.length; j++) {
-    if (ignoreEventForStartEndDateCreation(events[j])) {
-      continue;
-    }
     dateRange.start = getUpdatedStartFirstEventDate(dateRange.start, events[j]);
     dateRange.end = getUpdatedEndLastEventDate(dateRange.end, events[j]);
   }
   return dateRange;
+}
+
+/**
+ * @param {CalendarEvent}[] events
+ */ 
+function removeStudyReminderEvents(events) {
+  let eventsWithoutStudyReminder = [];
+  for (var j=0; j<events.length; j++) {
+    if (!matchesStudyReminderEvent(events[j])) {
+      eventsWithoutStudyReminder.push(events[j]);
+    }
+  }
+  return eventsWithoutStudyReminder;
 }
 
 /**
@@ -172,13 +200,12 @@ function addBufferToStudyDateRange(dateRange, buffer) {
   return dateRange;
 }
 
-
 /**
  * @param {CalendarEvent} event
  * 
  * return {Boolean}
  */ 
-function ignoreEventForStartEndDateCreation(event) {
+function matchesStudyReminderEvent(event) {
   let eventTitle = event.getTitle().toLocaleLowerCase();
 
   if (eventTitle.startsWith("abgabe")) {
@@ -215,4 +242,11 @@ function getUpdatedEndLastEventDate(endLastEvent, event) {
     return event.getEndTime();
   }
   return endLastEvent;
+}
+
+/**
+ * @param {CalendarEvent} event
+ */
+function eventToLogString(event) {
+  return `${event.getTitle()} on ${event.getStartTime()} with id: ${event.getId()}`;
 }
